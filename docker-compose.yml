@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8079:8080"
+    depends_on:
+      - redis
+    environment:
+      - REDIS_PASSWORD=mysecretpassword
+
+  redis:
+    image: "redis:latest"
+    ports:
+      - "6379:6379"
+    environment:
+      - REDIS_PASSWORD=mysecretpassword
+    command: ["redis-server", "--requirepass", "mysecretpassword"]
