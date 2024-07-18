@@ -19,34 +19,34 @@ docker-compose up
 ## For getting YOUR_ID_TOKEN
 
 ```
-curl 'https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=<YOUR_KEY>' \
+ID_TOKEN=$(curl 'https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key="<YOUR_KEY>"' \
 -H 'Content-Type: application/json' \
---data-binary '{"email":"<YOUR_ADDRESS>","password":"<YOUR_PASSWORD>","returnSecureToken":true}'
+--data-binary '{"email":"<YOUR_ADDRESS>"","password":"<YOUR_PASSWORD","returnSecureToken":true}' | jq -r .idToken)
 ```
 
 Refs: https://qiita.com/kazakago/items/892a8c5df76a912f1d82
 
 
 
-## GET /api/todos
-
-```
-curl -H "Authorization: Bearer <YOUR_ID_TOKEN>" http://localhost:8079/api/todos
-```
 
 ## POST /api/todos
 
 ```
-curl -X POST -H "Authorization: Bearer <YOUR_ID_TOKEN>" -H "Content-Type: application/json" -d '{"text": "New Task"}' http://localhost:8079/api/todos
+curl -X POST -H "Authorization: Bearer ${ID_TOKEN}" -H "Content-Type: application/json" -d '{"text": "New Task", "lat": 35.6895, "lng": 139.6917}' http://localhost:8079/api/todos
 ```
 
 ## PUT /api/todos/:id
 
 ```
-curl -X PUT -H "Authorization: Bearer <YOUR_ID_TOKEN>" -H "Content-Type: application/json" -d '{"text": "Updated Task", "done": true}' http://localhost:8079/api/todos/1
+curl -X PUT -H "Authorization: Bearer ${ID_TOKEN}" -H "Content-Type: application/json" -d '{"text": "Updated Task", "done": true, "lat": 35.6895, "lng": 139.6918}' http://localhost:8079/api/todos/<RETURNED_ID>
 ```
 
 ## DELETE /api/todos/:id
 ```
-curl -X DELETE -H "Authorization: Bearer <YOUR_ID_TOKEN>" http://localhost:8079/api/todos/1
+curl -X DELETE -H "Authorization: Bearer ${ID_TOKEN}" http://localhost:8079/api/todos/<RETURNED_ID>
+```
+
+## GET /api/todos/search
+```
+curl -H "Authorization: Bearer ${ID_TOKEN}" "http://localhost:8079/api/todos/search?lat=35.6895&lng=139.6917&radius=10"
 ```

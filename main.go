@@ -6,8 +6,10 @@ import (
     "fmt"
     "log"
     "net/http"
-    "strings"
     "os"
+    "strconv"
+    "strings"
+    "time"
 
     firebase "firebase.google.com/go"
     "github.com/gin-gonic/gin"
@@ -57,7 +59,7 @@ func authMiddleware() gin.HandlerFunc {
 
         ctx := context.Background()
         client, err := firebaseApp.Auth(ctx)
-        if (err != nil) {
+        if err != nil {
             log.Fatalf("error getting Auth client: %v\n", err)
         }
 
@@ -74,28 +76,11 @@ func authMiddleware() gin.HandlerFunc {
 }
 
 type Todo struct {
-    ID   string `json:"id"`
-    Text string `json:"text"`
-    Done bool   `json:"done"`
-}
-
-func getTodos(c *gin.Context) {
-    val, err := rdb.Get(ctx, "todos").Result()
-    if err == redis.Nil {
-        c.JSON(http.StatusOK, []Todo{})
-        return
-    } else if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-        return
-    }
-
-    var todos []Todo
-    if err := json.Unmarshal([]byte(val), &todos); err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-        return
-    }
-
-    c.JSON(http.StatusOK, todos)
+    ID     string  `json:"id"`
+    Text   string  `json:"text"`
+    Done   bool    `json:"done"`
+    Lat    float64 `json:"lat"`
+    Lng    float64 `json:"lng"`
 }
 
 func createTodo(c *gin.Context) {
@@ -105,30 +90,25 @@ func createTodo(c *gin.Context) {
         return
     }
 
-    val, err := rdb.Get(ctx, "todos").Result()
-    if err != nil && err != redis.Nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-        return
-    }
+    newTodo.ID = strconv.FormatInt(time.Now().UnixNano(), 10)
 
-    var todos []Todo
-    if val != "" {
-        if err := json.Unmarshal([]byte(val), &todos); err != nil {
-            c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-            return
-        }
-    }
-
-    newTodo.ID = fmt.Sprintf("%d", len(todos)+1)
-    todos = append(todos, newTodo)
-
-    jsonData, err := json.Marshal(todos)
+    jsonData, err := json.Marshal(newTodo)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
     }
 
-    if err := rdb.Set(ctx, "todos", jsonData, 0).Err(); err != nil {
+    if err := rdb.Set(ctx, fmt.Sprintf("todo:%s", newTodo.ID), jsonData, 0).Err(); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    // 位置情報をRedisに保存
+    if _, err := rdb.GeoAdd(ctx, "todos:locations", &redis.GeoLocation{
+        Name:      newTodo.ID,
+        Latitude:  newTodo.Lat,
+        Longitude: newTodo.Lng,
+    }).Result(); err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
     }
@@ -144,78 +124,135 @@ func updateTodo(c *gin.Context) {
         return
     }
 
-    val, err := rdb.Get(ctx, "todos").Result()
+    val, err := rdb.Get(ctx, fmt.Sprintf("todo:%s", id)).Result()
+    if err == redis.Nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+        return
+    } else if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    var existingTodo Todo
+    if err := json.Unmarshal([]byte(val), &existingTodo); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    existingTodo.Text = updatedTodo.Text
+    existingTodo.Done = updatedTodo.Done
+ //   oldLat := existingTodo.Lat
+ //   oldLng := existingTodo.Lng
+    existingTodo.Lat = updatedTodo.Lat
+    existingTodo.Lng = updatedTodo.Lng
+
+    jsonData, err := json.Marshal(existingTodo)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
     }
 
-    var todos []Todo
-    if err := json.Unmarshal([]byte(val), &todos); err != nil {
+    if err := rdb.Set(ctx, fmt.Sprintf("todo:%s", existingTodo.ID), jsonData, 0).Err(); err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
     }
 
-    for i, todo := range todos {
-        if todo.ID == id {
-            todos[i].Text = updatedTodo.Text
-            todos[i].Done = updatedTodo.Done
-
-            jsonData, err := json.Marshal(todos)
-            if err != nil {
-                c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-                return
-            }
-
-            if err := rdb.Set(ctx, "todos", jsonData, 0).Err(); err != nil {
-                c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-                return
-            }
-
-            c.JSON(http.StatusOK, todos[i])
-            return
-        }
+    // 位置情報を更新
+    if _, err := rdb.ZRem(ctx, "todos:locations", id).Result(); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
     }
 
-    c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+    if _, err := rdb.GeoAdd(ctx, "todos:locations", &redis.GeoLocation{
+        Name:      existingTodo.ID,
+        Latitude:  existingTodo.Lat,
+        Longitude: existingTodo.Lng,
+    }).Result(); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(http.StatusOK, existingTodo)
 }
 
 func deleteTodo(c *gin.Context) {
     id := c.Param("id")
 
-    val, err := rdb.Get(ctx, "todos").Result()
+    _, err := rdb.Get(ctx, fmt.Sprintf("todo:%s", id)).Result()
+    if err == redis.Nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+        return
+    } else if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    if err := rdb.Del(ctx, fmt.Sprintf("todo:%s", id)).Err(); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    // 位置情報を削除
+    if _, err := rdb.ZRem(ctx, "todos:locations", id).Result(); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{"message": "Todo deleted"})
+}
+
+func searchTodos(c *gin.Context) {
+    lat := c.Query("lat")
+    lng := c.Query("lng")
+    radius := c.Query("radius")
+
+    latF, err := strconv.ParseFloat(lat, 64)
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid latitude"})
+        return
+    }
+
+    lngF, err := strconv.ParseFloat(lng, 64)
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid longitude"})
+        return
+    }
+
+    radiusF, err := strconv.ParseFloat(radius, 64)
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid radius"})
+        return
+    }
+
+    locations, err := rdb.GeoRadius(ctx, "todos:locations", lngF, latF, &redis.GeoRadiusQuery{
+        Radius: radiusF,
+        Unit:   "km",
+    }).Result()
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
     }
 
-    var todos []Todo
-    if err := json.Unmarshal([]byte(val), &todos); err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-        return
-    }
-
-    for i, todo := range todos {
-        if todo.ID == id {
-            todos = append(todos[:i], todos[i+1:]...)
-
-            jsonData, err := json.Marshal(todos)
-            if err != nil {
-                c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-                return
-            }
-
-            if err := rdb.Set(ctx, "todos", jsonData, 0).Err(); err != nil {
-                c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-                return
-            }
-
-            c.JSON(http.StatusOK, gin.H{"message": "Todo deleted"})
+    var result []Todo
+    for _, location := range locations {
+        val, err := rdb.Get(ctx, fmt.Sprintf("todo:%s", location.Name)).Result()
+        if err == redis.Nil {
+            continue
+        } else if err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
             return
         }
+
+        var todo Todo
+        if err := json.Unmarshal([]byte(val), &todo); err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+            return
+        }
+
+        result = append(result, todo)
     }
 
-    c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+    c.JSON(http.StatusOK, result)
 }
 
 func main() {
@@ -227,10 +264,10 @@ func main() {
     api := r.Group("/api")
     api.Use(authMiddleware())
 
-    api.GET("/todos", getTodos)
     api.POST("/todos", createTodo)
     api.PUT("/todos/:id", updateTodo)
     api.DELETE("/todos/:id", deleteTodo)
+    api.GET("/todos/search", searchTodos)
 
     r.Run(":8080")
 }
