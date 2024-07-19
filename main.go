@@ -233,18 +233,25 @@ func searchTodos(c *gin.Context) {
         return
     }
 
-    var result []Todo
+    var keys []string
     for _, location := range locations {
-        val, err := rdb.Get(ctx, fmt.Sprintf("todo:%s", location.Name)).Result()
-        if err == redis.Nil {
+        keys = append(keys, fmt.Sprintf("todo:%s", location.Name))
+    }
+
+    vals, err := rdb.MGet(ctx, keys...).Result()
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    var result []Todo
+    for _, val := range vals {
+        if val == nil {
             continue
-        } else if err != nil {
-            c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-            return
         }
 
         var todo Todo
-        if err := json.Unmarshal([]byte(val), &todo); err != nil {
+        if err := json.Unmarshal([]byte(val.(string)), &todo); err != nil {
             c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
             return
         }
